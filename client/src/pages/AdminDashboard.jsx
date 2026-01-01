@@ -374,7 +374,7 @@ const AdminDashboard = () => {
             color: STATUS_COLORS[item.status] || '#8884D8'
         }));
 
-    const recentLeads = summary.recent_leads || [];
+    // const recentLeads = summary.recent_leads || [];
     
     // Requirements metrics
     const requirementMetrics = [
@@ -383,6 +383,14 @@ const AdminDashboard = () => {
         { subject: 'SRS Docs', A: summary.srs_documents_generated || 0, fullMark: 10 },
         { subject: 'Qualified %', A: ((summary.status_distribution.find(d => d.status === 'Qualified')?.count || 0) / summary.total_leads * 100) || 0, fullMark: 100 },
     ];
+
+
+
+
+
+
+
+
 
     return (
         <div className="srs-dashboard-container">
@@ -397,9 +405,9 @@ const AdminDashboard = () => {
                     <button className="nav-button" onClick={() => navigate('/admin/leads')}>
                         📋 View All Leads
                     </button>
-                    <button className="nav-button primary" onClick={() => navigate('/admin/requirements')}>
+                    {/* <button className="nav-button primary" onClick={() => navigate('/admin/requirements')}>
                         📝 Requirements Hub
-                    </button>
+                    </button> */}
                     <button className="nav-button logout-button" onClick={logout}>
                         🚪 Logout
                     </button>
@@ -490,45 +498,7 @@ const AdminDashboard = () => {
                     </ResponsiveContainer>
                 </div>
 
-                {/* Recent Activity */}
-                <div className="chart-panel recent-activity">
-                    <div className="chart-header">
-                        <h2>🕒 Recent Projects</h2>
-                        <span className="chart-subtitle">Latest requirements activities</span>
-                    </div>
-                    <div className="activity-list">
-                        {recentLeads.length > 0 ? (
-                            recentLeads.map((lead, index) => (
-                                <div key={index} className="activity-item">
-                                    <div className="activity-icon">
-                                        {lead.status === 'SRS_Generated' ? '📄' : 
-                                         lead.status === 'Requirements_Gathering' ? '📝' : 
-                                         lead.status === 'Qualified' ? '✅' : '🆕'}
-                                    </div>
-                                    <div className="activity-content">
-                                        <h4>{lead.project_name || 'Unnamed Project'}</h4>
-                                        <p className="activity-meta">
-                                            <span className="status-badge" style={{ 
-                                                backgroundColor: STATUS_COLORS[lead.status] || '#8884D8' 
-                                            }}>
-                                                {lead.status}
-                                            </span>
-                                            <span>• {lead.requirements_count || 0} requirements</span>
-                                        </p>
-                                    </div>
-                                    <button 
-                                        className="view-btn"
-                                        onClick={() => navigate(`/admin/lead/${lead.session_uuid}`)}
-                                    >
-                                        View →
-                                    </button>
-                                </div>
-                            ))
-                        ) : (
-                            <div className="no-activity">No recent activity</div>
-                        )}
-                    </div>
-                </div>
+
 
                 {/* Requirements Growth */}
                 <div className="chart-panel full-width">
@@ -556,40 +526,22 @@ const AdminDashboard = () => {
 
             </div>
 
-            {/* Platform Insights */}
-            <div className="insights-section">
-                <h2>💡 Platform Insights</h2>
-                <div className="insights-grid">
-                    <div className="insight-card">
-                        <h3>🎯 Most Common Project Types</h3>
-                        <ul>
-                            {summary.project_type_distribution?.slice(0, 5).map((type, idx) => (
-                                <li key={idx}>
-                                    <span className="type-name">{type.project_type || 'Unspecified'}</span>
-                                    <span className="type-count">{type.count} projects</span>
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                    <div className="insight-card">
-                        <h3>⚡ Quick Actions</h3>
-                        <div className="action-buttons">
-                            <button className="action-btn primary" onClick={() => navigate('/admin/requirements')}>
-                                📋 Manage Requirements
-                            </button>
-                            <button className="action-btn" onClick={() => navigate('/admin/srs')}>
-                                📄 View SRS Documents
-                            </button>
-                            <button className="action-btn" onClick={() => navigate('/admin/analytics')}>
-                                📊 Advanced Analytics
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
+
 
         </div>
     );
+
+
+
+
+  
+
+
+
+
+
+
+    
 };
 
 export default AdminDashboard;
