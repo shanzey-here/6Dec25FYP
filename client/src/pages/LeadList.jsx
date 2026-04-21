@@ -130,7 +130,26 @@ const LeadList = () => {
     };
     
     const handleArrangeMeeting = (lead) => {
-        alert(`Automation initiated: Preparing to send meeting link to ${lead.email}...`);
+        // Check if data exists; if not, use a fallback so it's not "null"
+        const recipient = lead.email || "client@example.com";
+        const projectName = lead.project_name || "your software project";
+    
+        // Construct the plain text message
+        const bodyText = `Dear Client,
+
+    We have successfully generated the SRS for your project: "${projectName}".
+
+    Our engineering team has reviewed the technical scope. We would like to invite you to our office in Faisalabad to discuss the development phase.
+
+    Best regards,
+    Shanzay Shafique
+    Lead Developer`;
+
+    // ONLY encode once here
+        const mailtoUrl = `mailto:${recipient}?subject=${encodeURIComponent("Meeting Proposal")}&body=${encodeURIComponent(bodyText)}`;
+    
+        window.location.href = mailtoUrl;
+
     };
 
     if (loading) return <div className="dashboard-loading" style={{textAlign: 'center', padding: '50px'}}>Loading Projects...</div>;

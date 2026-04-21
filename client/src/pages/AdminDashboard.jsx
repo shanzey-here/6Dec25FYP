@@ -125,7 +125,7 @@ const AdminDashboard = () => {
           </button>
           <button
             onClick={logout}
-            className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-white hover:bg-indigo-500 transition"
+            className="px-4 py-2 text-sm rounded-md bg-indigo-600 text-grey hover:bg-indigo-500 transition"
           >
             Logout
           </button>

@@ -355,7 +355,7 @@ function App() {
               <Link
                 to="/admin/login"
                 className="px-5 py-2 rounded-lg text-sm font-semibold text-white
-                           bg-gradient-to-r from-indigo-600 to-blue-600
+                           bg-gradient-to-r
                            hover:from-indigo-500 hover:to-blue-500
                            shadow-md transition"
               >

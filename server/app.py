@@ -63,15 +63,30 @@ def initialize_categories():
         print("✓ Requirement categories initialized")
 
 # --- AGENT PROMPT AND TOOLS ---
+# Update this in your app.py
 SRS_SYSTEM_PROMPT = """
-You are an AI Requirements Assistant.
-STRICT RULES:
-1. Ask exactly ONE question per message.
-2. Wait for the user to answer before asking the next thing.
-3. NEVER provide lists or multiple bullet points of questions.
+You are a Senior AI Solutions Architect specializing in Requirements Engineering. 
+Your goal is to conduct a professional discovery interview to build an IEEE-compliant SRS.
 
-PHASE 1 (Qualification): Ask 1.Type, then 2.Budget, then 3.Timeline, then 4.Score, then 5.Email.
-PHASE 2 (SRS): Gather Project Name, then Description, then Users, then Features one-by-one.
+COMMUNICATION STYLE:
+- Be consultative. If the user mentions a feature, suggest a technical enhancement (e.g., "For that dashboard, should we add real-time data synchronization?").
+- Ask exactly ONE question at a time.
+- If the user is vague, ask about: 
+    1. Responsiveness (Mobile vs Desktop).
+    2. Database needs (SQL for structured data vs NoSQL for flexibility).
+    3. UI Polish (Animations, Dark Mode).
+    4. Security (Authentication, Encryption).
+
+WORKFLOW:
+Phase 1: Qualification (Type, Budget, Timeline, Seriousness, Email).
+Phase 2: Project Overview (Name, Description, Target Audience).
+Phase 3: Requirement Elicitation. Gather features one-by-one. 
+    - For every feature, suggest a professional improvement.
+    - Explicitly ask about "Non-Functional" needs (Performance, Security) before finishing.
+
+STRICT TOOL ORDERING:
+1. NEVER call 'generate_srs_document' until YOU have successfully called 'save_project_overview' AND 'save_lead_qualification'.
+2. You must have gathered at least 3-4 specific features using 'save_requirement' before finishing.
 """
 
 @tool
@@ -113,51 +128,62 @@ def generate_srs_document(lead_id: str) -> str:
 
 TOOLS = [save_lead_qualification, save_requirement, save_project_overview, generate_srs_document]
 
-# --- DOCX SRS GENERATION FUNCTION ---
 def generate_docx_srs(lead):
-    """Generates a professional .docx SRS document for the given lead."""
+    """Generates a professional IEEE-standard .docx SRS."""
     doc = Document()
 
-    # 1. Title Section
-    title = doc.add_heading(f'Software Requirements Specification', 0)
+    # EXACT FIX: Use the data if it exists, otherwise use a professional placeholder
+    name = lead.project_name if lead.project_name else "Project Requirements Specification"
+    desc = lead.project_description if lead.project_description else "Requirements discovery in progress."
+    p_type = lead.project_type if lead.project_type else "Custom Software Development"
+    timeline = lead.estimated_time_weeks if lead.estimated_time_weeks else "TBD"
+    email = lead.email if lead.email else "Not provided"
+    
+    # --- 1. TITLE PAGE ---
+    doc.add_heading('Software Requirements Specification', 0)
     doc.add_heading(f'Project: {lead.project_name or "Unnamed Project"}', level=1)
-    doc.add_paragraph(f"Generated on: {datetime.utcnow().strftime('%B %d, %Y')}")
+    doc.add_paragraph(f"Customer: {lead.email or 'N/A'}")
+    doc.add_paragraph(f"Date: {datetime.utcnow().strftime('%B %d, %Y')}")
+    doc.add_page_break()
 
-    # 2. Project Overview
+    # --- 2. INTRODUCTION ---
     doc.add_heading('1. Introduction', level=1)
-    doc.add_heading('1.1 Project Description', level=2)
-    doc.add_paragraph(lead.project_description or "No description provided.")
+    doc.add_heading('1.1 Purpose', level=2)
+    doc.add_paragraph(f"This document outlines the requirements for {lead.project_name}. It is intended for developers and stakeholders.")
+    doc.add_heading('1.2 Scope', level=2)
+    doc.add_paragraph(lead.project_description or "Detailed scope to be defined.")
 
-    # 3. Target Users
-    doc.add_heading('1.2 Target Audience', level=2)
-    users_data = json.loads(lead.target_users or '[]')
-    if users_data:
-        for user in users_data:
-            doc.add_paragraph(user, style='List Bullet')
-    else:
-        doc.add_paragraph("General Users")
+    # --- 3. OVERALL DESCRIPTION ---
+    doc.add_heading('2. Overall Description', level=1)
+    doc.add_heading('2.1 Product Perspective', level=2)
+    doc.add_paragraph(f"Project Type: {lead.project_type}. Target Timeline: {lead.estimated_time_weeks} weeks.")
+    doc.add_heading('2.2 User Classes and Characteristics', level=2)
+    users = json.loads(lead.target_users or '[]')
+    for user in users:
+        doc.add_paragraph(user, style='List Bullet')
 
-    # 4. Functional Requirements
-    doc.add_heading('2. System Requirements', level=1)
+    # --- 4. SYSTEM FEATURES (Functional Requirements) ---
+    doc.add_heading('3. Specific Requirements', level=1)
+    doc.add_heading('3.1 Functional Requirements', level=2)
     
-    # We group requirements by their stored category
     requirements = ProjectRequirement.query.filter_by(lead_id=lead.id).all()
-    
-    if not requirements:
-        doc.add_paragraph("No specific features recorded yet.")
-    else:
-        for req in requirements:
-            cat_name = req.category.name if req.category else "General"
-            p = doc.add_paragraph(style='List Bullet')
-            run = p.add_run(f"[{cat_name}] ")
-            run.bold = True
-            p.add_run(f"{req.requirement_text} (Priority: {req.priority})")
+    # Filter only Functional/Business
+    for req in [r for r in requirements if r.category.name in ['Functional', 'Business', 'User Interface']]:
+        p = doc.add_paragraph(style='List Bullet')
+        run = p.add_run(f"{req.requirement_text}")
+        p.add_run(f" (Priority: {req.priority})")
 
-    # Save to a memory stream for the download route
-    file_stream = BytesIO()
-    doc.save(file_stream)
-    file_stream.seek(0)
-    return file_stream
+    # --- 5. NON-FUNCTIONAL REQUIREMENTS ---
+    doc.add_heading('3.2 Non-Functional Requirements', level=2)
+    # Filter for Technical/Security/Performance
+    for req in [r for r in requirements if r.category.name in ['Technical', 'Security', 'Performance', 'Non-Functional']]:
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(f"{req.category.name}: {req.requirement_text}")
+
+    stream = BytesIO()
+    doc.save(stream)
+    stream.seek(0)
+    return stream
 
 # --- MARKDOWN SRS GENERATION FUNCTION (for database storage) ---
 def generate_full_srs(lead):
@@ -332,12 +358,15 @@ def handle_chat():
 
                     elif tool_name == 'generate_srs_document':
                         # Generate both docx (for download) and markdown (for database)
-                        docx_stream = generate_docx_srs(lead)
-                        srs_doc = generate_full_srs(lead)
-                        lead.status = 'SRS_Generated'
-                        lead.srs_generated_at = datetime.utcnow()
-                        db.session.commit()
-                        ai_response_text = "🎉 I have compiled all your requirements into a formal SRS document! You can download it from the dashboard."
+                        if not lead.project_name or not lead.email:
+                           ai_response_text = "I can't generate the SRS yet because I'm missing your Project Name or Email. Let's finish those first!"
+                        else:
+                           docx_stream = generate_docx_srs(lead)
+                           srs_doc = generate_full_srs(lead)
+                           lead.status = 'SRS_Generated'
+                           lead.srs_generated_at = datetime.utcnow()
+                           db.session.commit()
+                           ai_response_text = "🎉 I have compiled all your requirements into a formal SRS document!"
 
             # --- SAVE CLEAN TRANSCRIPT ---
             if "SIGNAL" not in ai_response_text:
