@@ -31,7 +31,7 @@ from google.api_core.exceptions import ResourceExhausted
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}}) 
+CORS(app, resources={r"/api/*": {"origins": "*"}}) 
 
 # --- Configuration ---
 db_url = os.environ.get('DATABASE_URL', 'sqlite:///leads.db')
