@@ -365,6 +365,7 @@ GUIDELINES FOR THE SRS DOCUMENT:
 # --- AGENT INITIALIZATION ---
 agent_orchestrator = None
 srs_gen_llm = None
+agent_init_error = None
 
 try:
     API_KEY = os.environ.get('GOOGLE_API_KEY')
@@ -396,6 +397,7 @@ except Exception as e:
     print(f"Error initializing agent: {e}")
     agent_orchestrator = None
     srs_gen_llm = None
+    agent_init_error = str(e)
 
 # --- SMART FILTERING FUNCTION ---
 def should_use_llm(session_uuid, user_message):
@@ -437,8 +439,13 @@ def handle_chat():
             "is_srs_complete": False
         })
     
-    if not session_uuid or not user_message or not agent_orchestrator:
-        return jsonify({"error": "Missing data or Agent not initialized."}), 400
+    if not session_uuid or not user_message:
+        return jsonify({"error": "Missing data (session_uuid or user_message)."}), 400
+        
+    if not agent_orchestrator:
+        error_msg = f"Agent not initialized. Error details: {agent_init_error or 'Unknown error'}"
+        print(f"Chat failed: {error_msg}")
+        return jsonify({"error": error_msg}), 400
         
     with app.app_context():
         lead = db.session.execute(db.select(Lead).filter_by(session_uuid=session_uuid)).scalar_one_or_none()
