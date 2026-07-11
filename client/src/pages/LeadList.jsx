@@ -3,7 +3,7 @@ import axios from 'axios';
 import { useAuth } from '../auth/AuthContext.jsx';
 import { useNavigate } from 'react-router-dom';
  
-const API_BASE_URL = 'http://127.0.0.1:5000/api';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:5000/api';
  
 /* ─── Status config ─────────────────────────────────────────────── */
 const STATUS_META = {
@@ -126,6 +126,21 @@ const LeadList = () => {
     const projectName = lead.project_name || 'your software project';
     const bodyText = `Dear Client,\n\nWe have successfully generated the SRS for your project: "${projectName}".\n\nOur engineering team has reviewed the technical scope. We would like to invite you to our office in Faisalabad to discuss the development phase.\n\nBest regards,\nShanzay Shafique\nLead Developer`;
     window.location.href = `mailto:${recipient}?subject=${encodeURIComponent('Meeting Proposal')}&body=${encodeURIComponent(bodyText)}`;
+  };
+
+  const handleDeleteLead = async (lead) => {
+    if (window.confirm(`Are you sure you want to delete the lead for "${lead.project_name || 'Unnamed Project'}"?`)) {
+      try {
+        await axios.delete(`${API_BASE_URL}/admin/lead/${lead.session_uuid}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        alert('Lead deleted successfully.');
+        fetchLeads();
+      } catch (err) {
+        console.error('Failed to delete lead:', err.message);
+        alert(`Delete Failed: ${err.response?.data?.error || 'Check server logs.'}`);
+      }
+    }
   };
  
   if (loading) return (
@@ -326,6 +341,12 @@ const LeadList = () => {
                       label="✉ Meet"
                       color="#3ecf8e"
                       disabled={lead.status !== 'Qualified' && lead.status !== 'SRS_Generated'}
+                    />
+ 
+                    <ActionBtn
+                      onClick={() => handleDeleteLead(lead)}
+                      label="🗑 Del"
+                      color="#f85a5a"
                     />
                   </div>
                 </div>

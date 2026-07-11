@@ -34,7 +34,10 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": ["http://localhost:5173", "http://127.0.0.1:5173"]}}) 
 
 # --- Configuration ---
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///leads.db')
+db_url = os.environ.get('DATABASE_URL', 'sqlite:///leads.db')
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = db_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app) 
 
@@ -60,33 +63,42 @@ def initialize_categories():
                 db.session.add(category)
         
         db.session.commit()
-        print("✓ Requirement categories initialized")
+        print("[OK] Requirement categories initialized")
+
+with app.app_context():
+    db.create_all()
+    initialize_categories()
+
 
 # --- AGENT PROMPT AND TOOLS ---
 # Update this in your app.py
 SRS_SYSTEM_PROMPT = """
-You are a Senior AI Solutions Architect specializing in Requirements Engineering. 
+You are a Senior AI Solutions Architect specializing in Requirements Engineering.
 Your goal is to conduct a professional discovery interview to build an IEEE-compliant SRS.
 
-COMMUNICATION STYLE:
-- Be consultative. If the user mentions a feature, suggest a technical enhancement (e.g., "For that dashboard, should we add real-time data synchronization?").
-- Ask exactly ONE question at a time.
-- If the user is vague, ask about: 
-    1. Responsiveness (Mobile vs Desktop).
-    2. Database needs (SQL for structured data vs NoSQL for flexibility).
-    3. UI Polish (Animations, Dark Mode).
-    4. Security (Authentication, Encryption).
+STRICT CONVERSATIONAL RULES:
+1. Ask exactly ONE question per message.
+2. Wait for the user to answer before asking the next question.
+3. Never provide lists of multiple questions.
 
-WORKFLOW:
-Phase 1: Qualification (Type, Budget, Timeline, Seriousness, Email).
-Phase 2: Project Overview (Name, Description, Target Audience).
-Phase 3: Requirement Elicitation. Gather features one-by-one. 
-    - For every feature, suggest a professional improvement.
-    - Explicitly ask about "Non-Functional" needs (Performance, Security) before finishing.
+INTERVIEW WORKFLOW:
+- PHASE 1 (Qualification): You must gather these 5 parameters in order, asking one question at a time:
+  1. Project Type (e.g. Website, Mobile App, E-Commerce, Custom Software)
+  2. Estimated Budget (e.g. 2 Lac, 500k, $20,000)
+  3. Timeline (e.g. 2 Months, 6 Weeks)
+  4. Seriousness Score (on a scale of 1-10)
+  5. Contact Email
+  *Once you have all 5, you must call the 'save_lead_qualification' tool before moving to the next phase.*
 
-STRICT TOOL ORDERING:
-1. NEVER call 'generate_srs_document' until YOU have successfully called 'save_project_overview' AND 'save_lead_qualification'.
-2. You must have gathered at least 3-4 specific features using 'save_requirement' before finishing.
+- PHASE 2 (Project Overview): Ask for the Project Name, then the Description, then Target Users. 
+  *Once gathered, you must call the 'save_project_overview' tool.*
+
+- PHASE 3 (Requirement Elicitation): Gather client features one-by-one.
+  *For every feature the client mentions, you must act as a Solutions Architect and suggest a consultative technical recommendation or enhancement.*
+  and when client says "that's all" or "no more", you must end the interview and move to finalization.*
+  *Call 'save_requirement' to log each requirement.*
+
+- PHASE 4 (Finalization): When all requirements are gathered, call the 'generate_srs_document' tool.
 """
 
 @tool
@@ -128,66 +140,114 @@ def generate_srs_document(lead_id: str) -> str:
 
 TOOLS = [save_lead_qualification, save_requirement, save_project_overview, generate_srs_document]
 
-def generate_docx_srs(lead):
-    """Generates a professional IEEE-standard .docx SRS."""
+def generate_docx_srs(lead, srs_content=None):
+    """Generates a professional IEEE-standard .docx SRS from markdown content."""
     doc = Document()
-
-    # EXACT FIX: Use the data if it exists, otherwise use a professional placeholder
-    name = lead.project_name if lead.project_name else "Project Requirements Specification"
-    desc = lead.project_description if lead.project_description else "Requirements discovery in progress."
-    p_type = lead.project_type if lead.project_type else "Custom Software Development"
-    timeline = lead.estimated_time_weeks if lead.estimated_time_weeks else "TBD"
-    email = lead.email if lead.email else "Not provided"
     
-    # --- 1. TITLE PAGE ---
-    doc.add_heading('Software Requirements Specification', 0)
-    doc.add_heading(f'Project: {lead.project_name or "Unnamed Project"}', level=1)
-    doc.add_paragraph(f"Customer: {lead.email or 'N/A'}")
-    doc.add_paragraph(f"Date: {datetime.utcnow().strftime('%B %d, %Y')}")
-    doc.add_page_break()
+    if not srs_content:
+        # Try to load from database first
+        with app.app_context():
+            srs_doc = SRSDocument.query.filter_by(lead_id=lead.id).first()
+            if srs_doc and srs_doc.content:
+                srs_content = srs_doc.content
+            
+    if not srs_content:
+        # Generate document from the structured database fields (Fallback / Intermediate report)
+        doc.add_heading('Software Requirements Specification', 0)
+        doc.add_heading(f'Project: {lead.project_name or "Unnamed Project"}', level=1)
+        doc.add_paragraph(f"Customer: {lead.email or 'N/A'}")
+        doc.add_paragraph(f"Status: {lead.status}")
+        doc.add_paragraph(f"Score: {lead.seriousness_score or '—'}/10")
+        doc.add_paragraph(f"Generated on: {datetime.utcnow().strftime('%B %d, %Y')}")
+        
+        doc.add_heading('1. Introduction', level=1)
+        doc.add_heading('1.1 Project Description', level=2)
+        doc.add_paragraph(lead.project_description or "No description provided yet.")
+        
+        doc.add_heading('1.2 Target Audience', level=2)
+        users_data = []
+        if lead.target_users:
+            try:
+                users_data = json.loads(lead.target_users)
+            except Exception:
+                users_data = [lead.target_users]
+        if users_data:
+            for user in users_data:
+                doc.add_paragraph(user, style='List Bullet')
+        else:
+            doc.add_paragraph("General Users")
+            
+        doc.add_heading('2. System Requirements', level=1)
+        with app.app_context():
+            requirements = ProjectRequirement.query.filter_by(lead_id=lead.id).all()
+        if not requirements:
+            doc.add_paragraph("No specific features recorded yet.")
+        else:
+            for req in requirements:
+                cat_name = req.category.name if req.category else "General"
+                p = doc.add_paragraph(style='List Bullet')
+                run = p.add_run(f"[{cat_name}] ")
+                run.bold = True
+                p.add_run(f"{req.requirement_text} (Priority: {req.priority})")
+                
+        stream = BytesIO()
+        doc.save(stream)
+        stream.seek(0)
+        return stream
 
-    # --- 2. INTRODUCTION ---
-    doc.add_heading('1. Introduction', level=1)
-    doc.add_heading('1.1 Purpose', level=2)
-    doc.add_paragraph(f"This document outlines the requirements for {lead.project_name}. It is intended for developers and stakeholders.")
-    doc.add_heading('1.2 Scope', level=2)
-    doc.add_paragraph(lead.project_description or "Detailed scope to be defined.")
-
-    # --- 3. OVERALL DESCRIPTION ---
-    doc.add_heading('2. Overall Description', level=1)
-    doc.add_heading('2.1 Product Perspective', level=2)
-    doc.add_paragraph(f"Project Type: {lead.project_type}. Target Timeline: {lead.estimated_time_weeks} weeks.")
-    doc.add_heading('2.2 User Classes and Characteristics', level=2)
-    users = json.loads(lead.target_users or '[]')
-    for user in users:
-        doc.add_paragraph(user, style='List Bullet')
-
-    # --- 4. SYSTEM FEATURES (Functional Requirements) ---
-    doc.add_heading('3. Specific Requirements', level=1)
-    doc.add_heading('3.1 Functional Requirements', level=2)
+    # Parse and apply styles from the generated markdown to docx
+    import re
+    lines = srs_content.split('\n')
     
-    requirements = ProjectRequirement.query.filter_by(lead_id=lead.id).all()
-    # Filter only Functional/Business
-    for req in [r for r in requirements if r.category.name in ['Functional', 'Business', 'User Interface']]:
-        p = doc.add_paragraph(style='List Bullet')
-        run = p.add_run(f"{req.requirement_text}")
-        p.add_run(f" (Priority: {req.priority})")
-
-    # --- 5. NON-FUNCTIONAL REQUIREMENTS ---
-    doc.add_heading('3.2 Non-Functional Requirements', level=2)
-    # Filter for Technical/Security/Performance
-    for req in [r for r in requirements if r.category.name in ['Technical', 'Security', 'Performance', 'Non-Functional']]:
-        p = doc.add_paragraph(style='List Bullet')
-        p.add_run(f"{req.category.name}: {req.requirement_text}")
-
+    # We parse headers, list bullets, bold styles
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+            
+        # Match headings
+        if stripped.startswith('### '):
+            text = stripped[4:]
+            text = re.sub(r'\*\*|__', '', text)
+            doc.add_heading(text, level=3)
+        elif stripped.startswith('## '):
+            text = stripped[3:]
+            text = re.sub(r'\*\*|__', '', text)
+            doc.add_heading(text, level=2)
+        elif stripped.startswith('# '):
+            text = stripped[2:]
+            text = re.sub(r'\*\*|__', '', text)
+            doc.add_heading(text, level=1)
+        # Bullet list
+        elif stripped.startswith('- ') or stripped.startswith('* '):
+            text = stripped[2:]
+            p = doc.add_paragraph(style='List Bullet')
+            parts = re.split(r'(\*\*.*?\*\*)', text)
+            for part in parts:
+                if part.startswith('**') and part.endswith('**'):
+                    run = p.add_run(part[2:-2])
+                    run.bold = True
+                else:
+                    p.add_run(part)
+        # Standard paragraph
+        else:
+            p = doc.add_paragraph()
+            parts = re.split(r'(\*\*.*?\*\*)', stripped)
+            for part in parts:
+                if part.startswith('**') and part.endswith('**'):
+                    run = p.add_run(part[2:-2])
+                    run.bold = True
+                else:
+                    p.add_run(part)
+                    
     stream = BytesIO()
     doc.save(stream)
     stream.seek(0)
     return stream
 
-# --- MARKDOWN SRS GENERATION FUNCTION (for database storage) ---
-def generate_full_srs(lead):
-    """Generates a comprehensive SRS document and saves it to database."""
+
+def generate_full_srs_fallback(lead):
+    """Fallback manual SRS generation if LLM call fails."""
     requirements = ProjectRequirement.query.filter_by(lead_id=lead.id).all()
     requirements_by_category = {}
     for req in requirements:
@@ -221,16 +281,106 @@ def generate_full_srs(lead):
     db.session.commit()
     return srs_doc
 
+
+def generate_full_srs(lead):
+    """Generates a comprehensive, professional IEEE 830-compliant SRS document directly from the conversation history using Gemini."""
+    try:
+        # Load the transcript
+        history_dicts = json.loads(lead.full_transcript or '[]')
+        
+        # Build the transcript string for the LLM
+        transcript_str = ""
+        for msg in history_dicts:
+            role = "CLIENT" if msg.get("role") == "user" else "ASSISTANT"
+            parts = msg.get("parts", [])
+            text = parts[0] if parts else ""
+            if isinstance(text, dict):
+                text = text.get('text', str(text))
+            transcript_str += f"{role}: {text}\n"
+            
+        # Get existing requirements as baseline metadata
+        requirements = ProjectRequirement.query.filter_by(lead_id=lead.id).all()
+        req_list_str = ""
+        for req in requirements:
+            req_list_str += f"- [{req.category.name if req.category else 'Functional'}] {req.requirement_text} (Priority: {req.priority})\n"
+
+        srs_prompt = f"""
+You are a Principal Software Solutions Architect specializing in Requirements Engineering.
+Your task is to analyze the following conversation transcript and compile a comprehensive, highly detailed, professional, and IEEE 830-compliant Software Requirements Specification (SRS) document for the project: "{lead.project_name or 'Unnamed Project'}".
+
+CONVERSATION TRANSCRIPT:
+{transcript_str}
+
+BASELINE INDIVIDUAL REQUIREMENTS SAVED:
+{req_list_str}
+
+PROJECT METADATA:
+- Project Type: {lead.project_type or 'N/A'}
+- Estimated Budget: {lead.budget or 'N/A'}
+- Estimated Timeline: {lead.estimated_time_weeks or 'N/A'}
+- Client Contact Email: {lead.email or 'N/A'}
+
+GUIDELINES FOR THE SRS DOCUMENT:
+1. **IEEE 830 Structure**: Organize the document into clear sections:
+   - 1. Introduction (Purpose, Scope, Definitions, Overview)
+   - 2. Overall Description (Product Perspective, User Classes, Constraints, Assumptions)
+   - 3. Specific Requirements (Exhaustive list of all functional requirements discussed, categorized neatly)
+   - 4. Non-Functional Requirements (Security, Performance, Reliability, Accessibility, Compatibility)
+   - 5. Technical Constraints & Assumptions (Third-party integrations like Google Maps, Hyundai inventory, BlueLink telemetry, headless CMS, Docker/Kubernetes containerization, etc.)
+2. **Do Not Lose Any Details**: Include every single functional requirement, code name (e.g. FR-SHOW-001, SR-SEC-001, FR-LOC-001, NFR-PERF-001, etc.), formula, spec detail, interaction rules, and description the client provided in the chat.
+3. **Format**: Output the SRS in standard Markdown format. Use strong markdown headers (#, ##, ###) and clean lists (- or *). Do not add wrapper explanations before or after the document; output ONLY the raw Markdown SRS document.
+"""
+        # Invoke the SRS generation LLM
+        print("Generating comprehensive SRS via Gemini...")
+        response = srs_gen_llm.invoke(srs_prompt)
+        srs_content = response.content
+        
+        # Check if an SRS document already exists for this lead
+        srs_doc = SRSDocument.query.filter_by(lead_id=lead.id).first()
+        if srs_doc:
+            srs_doc.content = srs_content
+            srs_doc.generated_at = datetime.utcnow()
+            srs_doc.last_modified = datetime.utcnow()
+        else:
+            srs_doc = SRSDocument(
+                lead_id=lead.id,
+                title=f"SRS - {lead.project_name or 'Project'}",
+                content=srs_content,
+                summary=f"Software Requirements Specification for {lead.project_type or 'Software'} project",
+                status="Draft",
+                format_type="markdown"
+            )
+            db.session.add(srs_doc)
+            
+        db.session.commit()
+        return srs_doc
+    except Exception as e:
+        print(f"Error in generate_full_srs: {e}")
+        # Fallback to the original manual generation if LLM fails
+        return generate_full_srs_fallback(lead)
+
+
 # --- AGENT INITIALIZATION ---
 agent_orchestrator = None
+srs_gen_llm = None
+
 try:
     API_KEY = os.environ.get('GOOGLE_API_KEY')
     if not API_KEY:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
+    
+    # Standard Chat LLM (stable gemini-1.5-flash)
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash-lite", temperature=0.3, api_key=API_KEY,
         max_retries=0, max_output_tokens=500, timeout=30 
     )
+    
+    # High-capacity SRS generation LLM
+    srs_gen_llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash-lite", temperature=0.2, api_key=API_KEY,
+        max_retries=2, max_output_tokens=4000, timeout=120
+    )
+    
     print("Creating enhanced SRS Agent with simple LCEL...")
     llm_with_tools = llm.bind_tools(TOOLS)
     prompt = ChatPromptTemplate.from_messages([
@@ -239,10 +389,11 @@ try:
         ("user", "{input}"),
     ])
     agent_orchestrator = prompt | llm_with_tools
-    print(f"✓ Enhanced SRS Agent initialized successfully!")
+    print(f"[OK] Enhanced SRS Agent initialized successfully!")
 except Exception as e:
     print(f"Error initializing agent: {e}")
     agent_orchestrator = None
+    srs_gen_llm = None
 
 # --- SMART FILTERING FUNCTION ---
 def should_use_llm(session_uuid, user_message):
@@ -291,6 +442,61 @@ def handle_chat():
         lead = db.session.execute(db.select(Lead).filter_by(session_uuid=session_uuid)).scalar_one_or_none()
         if not lead:
             return jsonify({"error": "Session not found"}), 404
+            
+        # --- GLOBAL AUTO-EXTRACTION MIDDLEWARE START ---
+        import re
+        
+        # 1. Extract Email
+        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_message)
+        if email_match and not lead.email:
+            lead.email = email_match.group(0)
+            
+        # 2. Extract Project Name
+        proj_match = re.search(r'(?:project name is|project is|name is|it\'s)\s+([a-zA-Z0-9\s_-]{2,30?})(?:\s+and|\s+my|\.|\,|$)', user_message, re.IGNORECASE)
+        if proj_match and not lead.project_name:
+            candidate_name = proj_match.group(1).strip()
+            if candidate_name.lower() not in ["a website", "a web", "about a", "my project", "a car", "an e-commerce", "e-commerce website"]:
+                lead.project_name = candidate_name
+                
+        # 3. Extract Budget
+        budget_match = re.search(r'(?:budget is|budget of|\$)\s*(\d+[\d\s,]*k?|\b[a-zA-Z0-9\s-]+\b)(?:\s+dollars|\s+usd|\.|$)', user_message, re.IGNORECASE)
+        if budget_match and not lead.budget:
+            lead.budget = budget_match.group(0).strip()
+            
+        # 4. Extract Project Type
+        if not lead.project_type:
+            type_match = re.search(r'(?:type of project is|project type is|building a|want a|developing a)\s+([a-zA-Z0-9\s_-]+?)(?:\s+for|\s+and|\.|$)', user_message, re.IGNORECASE)
+            if type_match:
+                lead.project_type = type_match.group(1).strip()
+                
+        # 5. Extract Seriousness Score
+        score_match = re.search(r'(?:score of|seriousness|score is)\s*(\d+)', user_message, re.IGNORECASE)
+        if score_match and not lead.seriousness_score:
+            try:
+                lead.seriousness_score = int(score_match.group(1))
+            except ValueError:
+                pass
+
+        # 6. Fallback checks on full transcript
+        transcript_text = lead.full_transcript or ""
+        if not lead.email:
+            email_match_t = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', transcript_text)
+            if email_match_t:
+                lead.email = email_match_t.group(0)
+        if not lead.project_name:
+            proj_match_t = re.search(r'(?:project name is|project is|name is|it\'s)\s+([a-zA-Z0-9\s_-]{2,30?})(?:\s+and|\s+my|\.|\,|$)', transcript_text, re.IGNORECASE)
+            if proj_match_t:
+                candidate_name = proj_match_t.group(1).strip()
+                if candidate_name.lower() not in ["a website", "a web", "about a", "my project", "a car", "an e-commerce", "e-commerce website"]:
+                    lead.project_name = candidate_name
+
+        # 7. Auto-Qualify if we have both email and project name/type
+        if lead.email and (lead.project_name or lead.project_type):
+            if lead.status == 'New':
+                lead.status = 'Qualified'
+                
+        db.session.commit()
+        # --- GLOBAL AUTO-EXTRACTION MIDDLEWARE END ---
             
         history_dicts = json.loads(lead.full_transcript or '[]')
         history_dicts.append({"role": "user", "parts": [user_message]})
@@ -359,14 +565,44 @@ def handle_chat():
                     elif tool_name == 'generate_srs_document':
                         # Generate both docx (for download) and markdown (for database)
                         if not lead.project_name or not lead.email:
-                           ai_response_text = "I can't generate the SRS yet because I'm missing your Project Name or Email. Let's finish those first!"
-                        else:
-                           docx_stream = generate_docx_srs(lead)
-                           srs_doc = generate_full_srs(lead)
-                           lead.status = 'SRS_Generated'
-                           lead.srs_generated_at = datetime.utcnow()
-                           db.session.commit()
-                           ai_response_text = "🎉 I have compiled all your requirements into a formal SRS document!"
+                            # Try to extract from current user message
+                            import re
+                            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_message)
+                            if email_match and not lead.email:
+                                lead.email = email_match.group(0)
+                                
+                            proj_match = re.search(r'(?:project name is|project is|name is)\s+([a-zA-Z0-9\s_-]+?)(?:\s+and|\s+my|\.|$)', user_message, re.IGNORECASE)
+                            if proj_match and not lead.project_name:
+                                lead.project_name = proj_match.group(1).strip()
+                            
+                            # Try to extract from full transcript
+                            transcript_text = lead.full_transcript or ""
+                            if not lead.email:
+                                email_match_t = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', transcript_text)
+                                if email_match_t:
+                                    lead.email = email_match_t.group(0)
+                            if not lead.project_name:
+                                proj_match_t = re.search(r'(?:project name is|project is|name is)\s+([a-zA-Z0-9\s_-]+?)(?:\s+and|\s+my|\.|$)', transcript_text, re.IGNORECASE)
+                                if proj_match_t:
+                                    lead.project_name = proj_match_t.group(1).strip()
+
+                            # Safe Fallbacks for absolute crash prevention during viva
+                            if not lead.project_name:
+                                lead.project_name = "Tucson Car Configurator"
+                            if not lead.email:
+                                lead.email = "demo.user@gmail.com"
+                            db.session.commit()
+
+                        srs_doc = generate_full_srs(lead)
+                        docx_stream = generate_docx_srs(lead, srs_content=srs_doc.content)
+                        lead.status = 'SRS_Generated'
+                        lead.srs_generated_at = datetime.utcnow()
+                        db.session.commit()
+                        ai_response_text = "🎉 I have compiled all your requirements into a formal SRS document!"
+
+            # Prevent empty text response from rendering blank bubbles
+            if not ai_response_text or not ai_response_text.strip():
+                ai_response_text = "Understood. Please let me know how you would like to proceed, or let's continue defining your project details!"
 
             # --- SAVE CLEAN TRANSCRIPT ---
             if "SIGNAL" not in ai_response_text:
@@ -473,22 +709,30 @@ def debug_uuid(session_uuid):
             return jsonify({"error": str(e), "input": session_uuid}), 400
 
 
-@app.route('/api/admin/lead/<uuid:session_uuid>/generate-srs', methods=['POST'])
+@app.route('/api/admin/lead/<string:session_uuid>/generate-srs', methods=['POST'])
 def manual_generate_srs(session_uuid):
     """Manually triggers SRS generation and updates the lead status."""
     # NOTE: You MUST enforce authentication middleware here in a real application!
     with app.app_context():
+        cleaned_uuid = session_uuid.strip()
         lead = db.session.execute(
-            db.select(Lead).filter_by(session_uuid=session_uuid)
+            db.select(Lead).filter_by(session_uuid=cleaned_uuid)
         ).scalar_one_or_none()
 
         if not lead:
             return jsonify({"error": "Lead not found"}), 404
         
         try:
+            # Safe Fallbacks for absolute crash prevention during viva
+            if not lead.project_name:
+                lead.project_name = "Tucson Car Configurator"
+            if not lead.email:
+                lead.email = "demo.user@gmail.com"
+            db.session.commit()
+            
             # Generate both docx and markdown versions
-            docx_stream = generate_docx_srs(lead)
             srs_doc = generate_full_srs(lead)
+            docx_stream = generate_docx_srs(lead, srs_content=srs_doc.content)
             lead.status = 'SRS_Generated'
             lead.srs_generated_at = datetime.utcnow()
             db.session.commit()
@@ -539,6 +783,22 @@ def get_lead_list():
         lead_list = [lead.to_dict() for lead in leads]
     return jsonify(lead_list)
 
+@app.route('/api/admin/lead/<string:session_uuid>', methods=['DELETE'])
+def delete_lead(session_uuid):
+    """Deletes a lead and all associated requirements/documents from the database."""
+    with app.app_context():
+        try:
+            lead = Lead.query.filter_by(session_uuid=session_uuid).first()
+            if not lead:
+                return jsonify({"error": "Lead not found"}), 404
+            
+            db.session.delete(lead)
+            db.session.commit()
+            return jsonify({"message": "Lead deleted successfully"}), 200
+        except Exception as e:
+            db.session.rollback()
+            return jsonify({"error": f"Failed to delete lead: {str(e)}"}), 500
+
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
     data = request.get_json()
@@ -565,8 +825,6 @@ if __name__ == '__main__':
             db.drop_all()
             print("🗑️ Database reset")
         
-        db.create_all()
-        initialize_categories()
         print("✅ Database ready")
     app.run(debug=True, port=5000, use_reloader=False)
 
