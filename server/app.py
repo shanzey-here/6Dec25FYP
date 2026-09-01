@@ -372,16 +372,16 @@ try:
     if not API_KEY:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
     
-    # Standard Chat LLM (stable gemini-1.5-flash)
+    # Standard Chat LLM (upgraded to Gemini 3.7 Flash)
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite", temperature=0.3, api_key=API_KEY,
-        max_retries=0, max_output_tokens=500, timeout=30 
+        model="gemini-2.0-flash", temperature=0.3, api_key=API_KEY,
+        max_retries=3, max_output_tokens=500, timeout=30 
     )
     
     # High-capacity SRS generation LLM
     srs_gen_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash-lite", temperature=0.2, api_key=API_KEY,
-        max_retries=2, max_output_tokens=4000, timeout=120
+        model="gemini-2.0-flash", temperature=0.2, api_key=API_KEY,
+        max_retries=3, max_output_tokens=4000, timeout=120
     )
     
     print("Creating enhanced SRS Agent with simple LCEL...")
