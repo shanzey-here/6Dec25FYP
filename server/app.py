@@ -80,25 +80,27 @@ STRICT CONVERSATIONAL RULES:
 1. Ask exactly ONE question per message.
 2. Wait for the user to answer before asking the next question.
 3. Never provide lists of multiple questions.
+4. Keep your responses natural, polite, and consultative.
 
 INTERVIEW WORKFLOW:
-- PHASE 1 (Qualification): You must gather these 5 parameters in order, asking one question at a time:
+- PHASE 1 (Qualification): Gather these 5 parameters in order, asking one question at a time:
   1. Project Type (e.g. Website, Mobile App, E-Commerce, Custom Software)
-  2. Estimated Budget (e.g. 2 Lac, 500k, $20,000)
+  2. Estimated Budget (e.g. 2 Lac, $5,000, $20,000)
   3. Timeline (e.g. 2 Months, 6 Weeks)
   4. Seriousness Score (on a scale of 1-10)
   5. Contact Email
-  *Once you have all 5, you must call the 'save_lead_qualification' tool before moving to the next phase.*
+  *Once you have all 5, call the 'save_lead_qualification' tool.*
 
-- PHASE 2 (Project Overview): Ask for the Project Name, then the Description, then Target Users. 
-  *Once gathered, you must call the 'save_project_overview' tool.*
+- PHASE 2 (Project Overview): Ask for the Project Name, then the Description, then the Target Audience/Users.
+  *Once all three are gathered, call the 'save_project_overview' tool exactly once.*
 
-- PHASE 3 (Requirement Elicitation): Gather client features one-by-one.
-  *For every feature the client mentions, you must act as a Solutions Architect and suggest a consultative technical recommendation or enhancement.*
-  and when client says "that's all" or "no more", you must end the interview and move to finalization.*
-  *Call 'save_requirement' to log each requirement.*
+- PHASE 3 (Requirement Elicitation): Gather features one-by-one.
+  *Do NOT call save_project_overview in this phase.*
+  *For each feature mentioned, call 'save_requirement' and provide a brief consultative technical recommendation or architectural enhancement (e.g., tech stack, performance, scalability).*
+  *If the user asks for suggestions, examples, or ideas (e.g. 'suggest me some', 'give me examples'), suggest 2-3 specific high-value architectural features for their project type and ask which one they want to include.*
+  *When the client indicates they are done (e.g., 'done', 'that is all', 'no more features'), call 'generate_srs_document'.*
 
-- PHASE 4 (Finalization): When all requirements are gathered, call the 'generate_srs_document' tool.
+- PHASE 4 (Finalization): When requirements gathering is complete, call 'generate_srs_document'.
 """
 
 @tool
@@ -194,6 +196,13 @@ def generate_docx_srs(lead, srs_content=None):
         doc.save(stream)
         stream.seek(0)
         return stream
+
+    # Ensure srs_content is a string before parsing
+    if isinstance(srs_content, list):
+        texts = [p['text'] if isinstance(p, dict) and 'text' in p else str(p) for p in srs_content]
+        srs_content = "\n\n".join(texts)
+    elif srs_content and not isinstance(srs_content, str):
+        srs_content = str(srs_content)
 
     # Parse and apply styles from the generated markdown to docx
     import re
@@ -333,7 +342,28 @@ GUIDELINES FOR THE SRS DOCUMENT:
         # Invoke the SRS generation LLM
         print("Generating comprehensive SRS via Gemini...")
         response = srs_gen_llm.invoke(srs_prompt)
-        srs_content = response.content
+        
+        # Safely extract text from response (Gemini can return str, list of dicts, etc.)
+        srs_content = ""
+        if hasattr(response, 'content'):
+            if isinstance(response.content, str):
+                srs_content = response.content
+            elif isinstance(response.content, list):
+                texts = []
+                for p in response.content:
+                    if isinstance(p, str):
+                        texts.append(p)
+                    elif isinstance(p, dict) and p.get('text'):
+                        texts.append(p['text'])
+                srs_content = "\n\n".join(texts)
+            else:
+                srs_content = str(response.content)
+        else:
+            srs_content = str(response)
+
+        if not srs_content or not srs_content.strip():
+            print("LLM returned empty SRS content, using fallback...")
+            return generate_full_srs_fallback(lead)
         
         # Check if an SRS document already exists for this lead
         srs_doc = SRSDocument.query.filter_by(lead_id=lead.id).first()
@@ -355,6 +385,7 @@ GUIDELINES FOR THE SRS DOCUMENT:
         db.session.commit()
         return srs_doc
     except Exception as e:
+        db.session.rollback()
         print(f"Error in generate_full_srs: {e}")
         # Fallback to the original manual generation if LLM fails
         return generate_full_srs_fallback(lead)
@@ -370,10 +401,10 @@ try:
     if not API_KEY:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
     
-    # Standard Chat LLM (upgraded to Gemini 3.7 Flash)
+    # Standard Chat LLM (Google Gemini 3.6 Flash)
     llm = ChatGoogleGenerativeAI(
         model="gemini-3.6-flash", temperature=0.3, api_key=API_KEY,
-        max_retries=3, max_output_tokens=500, timeout=30 
+        max_retries=3, max_output_tokens=2048, timeout=45 
     )
     
     # High-capacity SRS generation LLM
@@ -400,16 +431,15 @@ except Exception as e:
 # --- SMART FILTERING FUNCTION ---
 def should_use_llm(session_uuid, user_message):
     """Smart filtering to reduce API calls."""
-    # Skip LLM for simple acknowledgments
+    if not user_message or not isinstance(user_message, str):
+        return True, None
+        
+    # Skip LLM for simple greetings
     simple_responses = {
-        "hi": "Hello! I'm your AI Requirements Assistant.",
-        "hello": "Hello! Ready to gather your requirements.",
-        "thanks": "You're welcome!",
-        "thank you": "You're welcome!",
-        "ok": "Great!",
-        "okay": "Great!",
-        "yes": "Please continue...",
-        "no": "Alright, let me know if you change your mind.",
+        "hi": "Hello! I'm your AI Requirements Assistant. Let's continue defining your project.",
+        "hello": "Hello! Ready to help you build your requirements.",
+        "thanks": "You're welcome! Let's proceed.",
+        "thank you": "You're welcome! Let's proceed.",
     }
     
     user_lower = user_message.lower().strip()
@@ -422,11 +452,11 @@ def should_use_llm(session_uuid, user_message):
 @app.route('/api/chat', methods=['POST'])
 def handle_chat():
     """Handle chat messages with AI agent."""
-    data = request.get_json()
+    data = request.get_json() or {}
     session_uuid = data.get('session_uuid')
-    user_message = data.get('user_message')
+    user_message = data.get('user_message') or data.get('message') or ""
 
-    # SMART FILTER - REDUCES API CALLS BY 30-40%
+    # SMART FILTER - REDUCES API CALLS
     should_call_llm, canned_response = should_use_llm(session_uuid, user_message)
 
     if not should_call_llm:
@@ -449,61 +479,73 @@ def handle_chat():
         lead = db.session.execute(db.select(Lead).filter_by(session_uuid=session_uuid)).scalar_one_or_none()
         if not lead:
             return jsonify({"error": "Session not found"}), 404
-            
-        # --- GLOBAL AUTO-EXTRACTION MIDDLEWARE START ---
+                    # --- ROBUST STATE & ATTRIBUTE EXTRACTION ---
         import re
         
-        # 1. Extract Email
-        email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_message)
-        if email_match and not lead.email:
-            lead.email = email_match.group(0)
+        # 1. Extract Email if not present
+        if not lead.email:
+            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', user_message)
+            if email_match:
+                lead.email = email_match.group(0)
             
-        # 2. Extract Project Name
-        proj_match = re.search(r'(?:project name is|project is|name is|it\'s)\s+([a-zA-Z0-9\s_-]{2,30?})(?:\s+and|\s+my|\.|\,|$)', user_message, re.IGNORECASE)
-        if proj_match and not lead.project_name:
-            candidate_name = proj_match.group(1).strip()
-            if candidate_name.lower() not in ["a website", "a web", "about a", "my project", "a car", "an e-commerce", "e-commerce website"]:
-                lead.project_name = candidate_name
-                
-        # 3. Extract Budget
-        budget_match = re.search(r'(?:budget is|budget of|\$)\s*(\d+[\d\s,]*k?|\b[a-zA-Z0-9\s-]+\b)(?:\s+dollars|\s+usd|\.|$)', user_message, re.IGNORECASE)
-        if budget_match and not lead.budget:
-            lead.budget = budget_match.group(0).strip()
+        # 2. Extract Budget if not present
+        if not lead.budget:
+            budget_match = re.search(r'(?:budget is|budget of|\$)\s*(\d+[\d\s,]*k?|\b[a-zA-Z0-9\s-]+\b)(?:\s+dollars|\s+usd|\.|$)', user_message, re.IGNORECASE)
+            if budget_match:
+                lead.budget = budget_match.group(0).strip()
             
-        # 4. Extract Project Type
+        # 3. Extract Project Type if not present
         if not lead.project_type:
             type_match = re.search(r'(?:type of project is|project type is|building a|want a|developing a)\s+([a-zA-Z0-9\s_-]+?)(?:\s+for|\s+and|\.|$)', user_message, re.IGNORECASE)
             if type_match:
                 lead.project_type = type_match.group(1).strip()
                 
-        # 5. Extract Seriousness Score
-        score_match = re.search(r'(?:score of|seriousness|score is)\s*(\d+)', user_message, re.IGNORECASE)
-        if score_match and not lead.seriousness_score:
-            try:
-                lead.seriousness_score = int(score_match.group(1))
-            except ValueError:
-                pass
+        # 4. Extract Seriousness Score if not present
+        if not lead.seriousness_score:
+            score_match = re.search(r'(?:score of|seriousness|score is)\s*(\d+)', user_message, re.IGNORECASE)
+            if score_match:
+                try:
+                    lead.seriousness_score = int(score_match.group(1))
+                except ValueError:
+                    pass
 
-        # 6. Fallback checks on full transcript
+        # 5. Fallback checks on full transcript
         transcript_text = lead.full_transcript or ""
         if not lead.email:
             email_match_t = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', transcript_text)
             if email_match_t:
                 lead.email = email_match_t.group(0)
-        if not lead.project_name:
-            proj_match_t = re.search(r'(?:project name is|project is|name is|it\'s)\s+([a-zA-Z0-9\s_-]{2,30?})(?:\s+and|\s+my|\.|\,|$)', transcript_text, re.IGNORECASE)
-            if proj_match_t:
-                candidate_name = proj_match_t.group(1).strip()
-                if candidate_name.lower() not in ["a website", "a web", "about a", "my project", "a car", "an e-commerce", "e-commerce website"]:
-                    lead.project_name = candidate_name
 
-        # 7. Auto-Qualify if we have both email and project name/type
-        if lead.email and (lead.project_name or lead.project_type):
-            if lead.status == 'New':
-                lead.status = 'Qualified'
+        # 6. Auto-Qualify if we have email
+        just_qualified = False
+        if lead.email and lead.status == 'New':
+            lead.status = 'Qualified'
+            just_qualified = True
+
+        # 7. PHASE 2 STATE TRANSITIONS (Direct Capture)
+        # If the lead was already qualified in previous turns, map direct replies
+        clean_msg = user_message.strip()
+        if lead.status == 'Qualified' and not just_qualified:
+            # Step A: Capture Project Name
+            if not lead.project_name and clean_msg and "@" not in clean_msg:
+                # Strip conversational prefixes if user typed "it's birkin" or "my project name is birkin"
+                name_candidate = re.sub(r'^(?:it\'?s|project is|name is|it is|called|project name is)\s+', '', clean_msg, flags=re.IGNORECASE).strip(' .!,')
+                if len(name_candidate) >= 2 and name_candidate.lower() not in ["website", "app", "mobile app"]:
+                    lead.project_name = name_candidate
+            
+            # Step B: Capture Description (if name already exists but description doesn't)
+            elif lead.project_name and not lead.project_description and clean_msg:
+                # If the message isn't just repeating the name, it's the description
+                if clean_msg.lower() != lead.project_name.lower():
+                    lead.project_description = clean_msg
+            
+            # Step C: Capture Target Users (if name and description exist)
+            elif lead.project_name and lead.project_description and (not lead.target_users or lead.target_users == '[]') and clean_msg:
+                if clean_msg.lower() != lead.project_name.lower():
+                    lead.target_users = json.dumps([u.strip() for u in clean_msg.split(',') if u.strip()])
                 
         db.session.commit()
-        # --- GLOBAL AUTO-EXTRACTION MIDDLEWARE END ---
+        # --- ROBUST STATE & ATTRIBUTE EXTRACTION END -----
             
         history_dicts = json.loads(lead.full_transcript or '[]')
         history_dicts.append({"role": "user", "parts": [user_message]})
@@ -514,13 +556,27 @@ def handle_chat():
                 text = msg["parts"][0]
                 if isinstance(text, dict): 
                     text = text.get('text', str(text))
-                
                 if msg["role"] == 'user':
                     chat_history_messages.append(HumanMessage(content=text))
                 else:
                     chat_history_messages.append(AIMessage(content=text))
             
-            result = agent_orchestrator.invoke({"input": user_message, "chat_history": chat_history_messages})
+            # --- PHASE-AWARE CONTEXT INJECTION ---
+            # Guide the LLM through the interview phases cleanly
+            phase_context = ""
+            if lead.status == 'Qualified' and not lead.project_name:
+                phase_context = "\n[SYSTEM: Qualification is COMPLETE. Ask the user for their Project Name.]"
+            elif lead.status == 'Qualified' and lead.project_name and not lead.project_description:
+                phase_context = f"\n[SYSTEM: Project Name is '{lead.project_name}'. Ask the user for a brief Description of the project.]"
+            elif lead.status == 'Qualified' and lead.project_name and lead.project_description and (not lead.target_users or lead.target_users == '[]'):
+                phase_context = f"\n[SYSTEM: Description is recorded. Ask who the Target Users/Audience are for '{lead.project_name}'. Once they answer, call save_project_overview.]"
+            elif lead.status == 'Qualified' and lead.project_name and lead.project_description:
+                phase_context = "\n[SYSTEM: You are in Phase 3 (Requirement Elicitation). Overview is already recorded—do NOT call save_project_overview. For each feature the client describes, call 'save_requirement' and provide your consultative architectural advice. If the client asks for ideas, suggestions, or examples, provide 2-3 specific architectural recommendations and ask which one they want to add. When the client is finished, call 'generate_srs_document'.]"
+            elif lead.status == 'Requirements_Gathered':
+                phase_context = "\n[SYSTEM: All requirements gathered. Call generate_srs_document to finalize.]"
+            
+            enhanced_input = f"{user_message}{phase_context}" if phase_context else user_message
+            result = agent_orchestrator.invoke({"input": enhanced_input, "chat_history": chat_history_messages})
             
             # --- CRASH-PROOF TEXT EXTRACTION ---
             ai_response_text = ""
@@ -528,10 +584,17 @@ def handle_chat():
                 if isinstance(result.content, str):
                     ai_response_text = result.content
                 elif isinstance(result.content, list):
-                    ai_response_text = " ".join([p['text'] for p in result.content if isinstance(p, dict) and 'text' in p])
+                    texts = []
+                    for p in result.content:
+                        if isinstance(p, str):
+                            texts.append(p)
+                        elif isinstance(p, dict) and p.get('text'):
+                            texts.append(p['text'])
+                    ai_response_text = " ".join(texts)
             
-            if not ai_response_text: 
-                ai_response_text = str(result.content)
+            # Clean up any leftover metadata or signature string representations
+            if ai_response_text.strip().startswith("[{") or ai_response_text.strip().startswith("{") or "signature" in ai_response_text:
+                ai_response_text = ""
 
             # --- PROCESS TOOLS (Updating Database Based on Tool Calls) ---
             if hasattr(result, 'tool_calls') and result.tool_calls:
@@ -540,21 +603,30 @@ def handle_chat():
                     args = tool_call['args']
                     
                     if tool_name == 'save_lead_qualification':
-                        lead.project_type = args.get('project_type')
-                        lead.budget = args.get('budget')
-                        lead.estimated_time_weeks = args.get('timeline')
-                        lead.seriousness_score = args.get('seriousness_score')
-                        lead.email = args.get('email')
-                        lead.status = 'Qualified' 
-                        ai_response_text = "✅ Qualification Complete! What is the **Name** of your project?"
+                        lead.project_type = args.get('project_type', lead.project_type)
+                        lead.budget = args.get('budget', lead.budget)
+                        lead.estimated_time_weeks = args.get('timeline', lead.estimated_time_weeks)
+                        lead.seriousness_score = args.get('seriousness_score', lead.seriousness_score)
+                        lead.email = args.get('email', lead.email)
+                        if not lead.project_name:
+                            lead.status = 'Qualified' 
+                            ai_response_text = "✅ Qualification Complete! What is the **Name** of your project?"
                     
                     elif tool_name == 'save_project_overview':
-                        lead.project_name = args.get('project_name')
-                        lead.project_description = args.get('project_description')
-                        # Convert comma-separated features/users into JSON lists for the dashboard
-                        lead.target_users = json.dumps([u.strip() for u in args.get('target_users', '').split(',') if u.strip()])
-                        lead.key_features = json.dumps([f.strip() for f in args.get('key_features', '').split(',') if f.strip()])
-                        ai_response_text = f"Excellent! I've recorded the overview for **{lead.project_name}**. Now, let's list specific features one by one."
+                        lead.project_name = args.get('project_name', lead.project_name)
+                        lead.project_description = args.get('project_description', lead.project_description)
+                        if args.get('target_users'):
+                            lead.target_users = json.dumps([u.strip() for u in args.get('target_users', '').split(',') if u.strip()])
+                        if args.get('key_features'):
+                            lead.key_features = json.dumps([f.strip() for f in args.get('key_features', '').split(',') if f.strip()])
+                        
+                        req_count = len(lead.requirements) if lead.requirements else 0
+                        if req_count == 0:
+                            if not ai_response_text or len(ai_response_text.strip()) < 10:
+                                ai_response_text = f"Excellent! I've recorded the overview for **{lead.project_name}**. What is the first feature or functionality you would like to include?"
+                        else:
+                            if not ai_response_text or len(ai_response_text.strip()) < 10:
+                                ai_response_text = "Got it! What other features or technical specifications would you like to add?"
 
                     elif tool_name == 'save_requirement':
                         cat_name = args.get('category', 'Functional')
@@ -567,7 +639,9 @@ def handle_chat():
                             status='Identified'
                         )
                         db.session.add(new_req)
-                        ai_response_text = f"Got it. I've logged that {cat_name} requirement. What is the next feature?"
+                        # If the model provided consultative advice in its text, keep it!
+                        if not ai_response_text or len(ai_response_text.strip()) < 10:
+                            ai_response_text = f"Got it. I've logged that {cat_name} requirement. What is the next feature or specification you would like to include?"
 
                     elif tool_name == 'generate_srs_document':
                         # Generate both docx (for download) and markdown (for database)
@@ -607,9 +681,18 @@ def handle_chat():
                         db.session.commit()
                         ai_response_text = "🎉 I have compiled all your requirements into a formal SRS document!"
 
-            # Prevent empty text response from rendering blank bubbles
+            # Prevent empty text response from rendering blank bubbles with smart context fallback
             if not ai_response_text or not ai_response_text.strip():
-                ai_response_text = "Understood. Please let me know how you would like to proceed, or let's continue defining your project details!"
+                if lead.status == 'New':
+                    ai_response_text = "Could you tell me a little more about the type of project, budget, or timeline you have in mind?"
+                elif not lead.project_name:
+                    ai_response_text = "What is the **Name** of your project?"
+                elif not lead.project_description:
+                    ai_response_text = f"Could you provide a brief description of what **{lead.project_name}** will do?"
+                elif not lead.target_users or lead.target_users == '[]':
+                    ai_response_text = f"Who will be the target users or audience for **{lead.project_name}**?"
+                else:
+                    ai_response_text = "Got it. What is the next feature or technical requirement you would like to include?"
 
             # --- SAVE CLEAN TRANSCRIPT ---
             if "SIGNAL" not in ai_response_text:
@@ -627,7 +710,17 @@ def handle_chat():
             
         except Exception as e:
             db.session.rollback()
-            print(f"Error in handle_chat: {str(e)}")
+            error_msg = str(e)
+            print(f"Error in handle_chat: {error_msg}")
+            if "RESOURCE_EXHAUSTED" in error_msg or "429" in error_msg:
+                # Provide a clean conversational fallback rather than crashing the client's screen
+                friendly_msg = "I've noted your response. Let's continue defining your project details or please give me another requirement!"
+                return jsonify({
+                    "session_uuid": session_uuid,
+                    "ai_response": friendly_msg,
+                    "is_qualified": lead.status in ['Qualified', 'SRS_Generated'] if lead else False,
+                    "is_srs_complete": lead.status == 'SRS_Generated' if lead else False
+                }), 200
             return jsonify({"error": str(e)}), 500
 
 @app.route('/api/session/start', methods=['POST'])
