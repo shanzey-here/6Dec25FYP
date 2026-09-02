@@ -844,36 +844,62 @@ def manual_generate_srs(session_uuid):
 
 @app.route('/api/admin/dashboard/summary', methods=['GET'])
 def get_dashboard_summary():
-    # Keeping this simplified dashboard endpoint
+    # Database-agnostic dashboard summary (compatible with PostgreSQL and SQLite)
     with app.app_context():
-        total_leads = db.session.scalar(db.select(db.func.count(Lead.id)))
-        
-        status_data = db.session.execute(db.select(Lead.status, db.func.count(Lead.id).label('count')).group_by(Lead.status)).mappings().all()
+        try:
+            total_leads = db.session.scalar(db.select(db.func.count(Lead.id))) or 0
+            
+            status_data = db.session.execute(
+                db.select(Lead.status, db.func.count(Lead.id).label('count')).group_by(Lead.status)
+            ).mappings().all()
 
-        total_requirements = db.session.scalar(db.select(db.func.count(ProjectRequirement.id)))
-        avg_requirements_per_lead = total_requirements / total_leads if total_leads > 0 else 0
-        
-        srs_generated = db.session.scalar(db.select(db.func.count(SRSDocument.id)))
-        
-        type_data = db.session.execute(db.select(Lead.project_type, db.func.count(Lead.id).label('count')).where(Lead.status == 'Qualified').group_by(Lead.project_type)).mappings().all()
-        
-        recent_leads = db.session.execute(db.select(Lead).order_by(Lead.created_at.desc()).limit(5)).scalars().all()
-        
-        volume_data = db.session.execute(db.select(db.func.strftime('%Y-%m-%d', Lead.created_at).label('date'), db.func.count(Lead.id).label('count')).group_by('date').order_by('date').limit(30)).mappings().all()
-        
-    return jsonify({
-        "total_leads": total_leads,
-        "status_distribution": [dict(s) for s in status_data],
-        "project_type_distribution": [dict(t) for t in type_data],
-        "total_requirements": total_requirements,
-        "avg_requirements_per_lead": round(avg_requirements_per_lead, 2),
-        "srs_documents_generated": srs_generated,
-        "volume_by_day": [dict(v) for v in volume_data],
-        "recent_leads": [{
-            'id': lead.id, 'session_uuid': lead.session_uuid, 'project_name': lead.project_name or 'Unnamed', 
-            'status': lead.status, 'email': lead.email
-        } for lead in recent_leads]
-    })
+            total_requirements = db.session.scalar(db.select(db.func.count(ProjectRequirement.id))) or 0
+            avg_requirements_per_lead = total_requirements / total_leads if total_leads > 0 else 0
+            
+            srs_generated = db.session.scalar(db.select(db.func.count(SRSDocument.id))) or 0
+            
+            type_data = db.session.execute(
+                db.select(Lead.project_type, db.func.count(Lead.id).label('count'))
+                .where(Lead.status == 'Qualified')
+                .group_by(Lead.project_type)
+            ).mappings().all()
+            
+            recent_leads = db.session.execute(
+                db.select(Lead).order_by(Lead.created_at.desc()).limit(5)
+            ).scalars().all()
+            
+            # Group dates in Python to avoid SQL dialect syntax differences (strftime vs to_char)
+            all_leads_dates = db.session.execute(
+                db.select(Lead.created_at).order_by(Lead.created_at.asc())
+            ).scalars().all()
+            
+            date_counts = {}
+            for dt in all_leads_dates:
+                if dt:
+                    d_str = dt.strftime('%Y-%m-%d')
+                    date_counts[d_str] = date_counts.get(d_str, 0) + 1
+            
+            volume_data = [{"date": k, "count": v} for k, v in sorted(date_counts.items())[-30:]]
+            
+            return jsonify({
+                "total_leads": total_leads,
+                "status_distribution": [dict(s) for s in status_data],
+                "project_type_distribution": [dict(t) for t in type_data],
+                "total_requirements": total_requirements,
+                "avg_requirements_per_lead": round(avg_requirements_per_lead, 2),
+                "srs_documents_generated": srs_generated,
+                "volume_by_day": volume_data,
+                "recent_leads": [{
+                    'id': lead.id, 
+                    'session_uuid': lead.session_uuid, 
+                    'project_name': lead.project_name or 'Unnamed', 
+                    'status': lead.status, 
+                    'email': lead.email
+                } for lead in recent_leads]
+            })
+        except Exception as e:
+            print(f"Error in get_dashboard_summary: {str(e)}")
+            return jsonify({"error": str(e)}), 500
 
 @app.route('/api/admin/leads', methods=['GET'])
 def get_lead_list():
