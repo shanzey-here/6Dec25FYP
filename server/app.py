@@ -372,13 +372,13 @@ try:
     
     # Standard Chat LLM (upgraded to Gemini 3.7 Flash)
     llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", temperature=0.3, api_key=API_KEY,
+        model="gemini-3.6-flash", temperature=0.3, api_key=API_KEY,
         max_retries=3, max_output_tokens=500, timeout=30 
     )
     
     # High-capacity SRS generation LLM
     srs_gen_llm = ChatGoogleGenerativeAI(
-        model="gemini-2.0-flash", temperature=0.2, api_key=API_KEY,
+        model="gemini-3.6-flash", temperature=0.2, api_key=API_KEY,
         max_retries=3, max_output_tokens=4000, timeout=120
     )
     
